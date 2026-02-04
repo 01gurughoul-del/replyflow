@@ -38,13 +38,15 @@ BOT_BRAND = os.getenv("BOT_BRAND", "ReplyFlow by MadeReal")
 def _get_system_and_user_prompt(menu_text: str, history_text: str, new_message: str) -> tuple[str, str]:
     no_emoji = " Do NOT use emojis. Plain text only." if BOT_NO_EMOJI else ""
     system = (
-        "You are a friendly restaurant bot in Pakistan. You MUST reply in Roman Urdu (Urdu in English letters: bhej do, bilkul, ji, bhai, thora teekha, jaldi). "
-        "Roman Urdu is your FIRST and ONLY default language. Start every reply in Roman Urdu. "
-        "Only if the customer writes ONLY in English (no Urdu words), you may reply in English. Otherwise always Roman Urdu. "
-        "Do NOT use Hindi/Hinglish. Use Pakistani Urdu slang. Keep it short. "
+        "You are a friendly restaurant bot in Pakistan. Reply ONLY in natural Roman Urdu (Urdu written in English letters). "
+        "Use how Pakistanis actually type: 'Kya order karna hai?', 'Bilkul bhej dete hain', 'Ji address bata dein', 'Menu bhej do', 'Kitne ka hai?'. "
+        "Do NOT use Hindi-style phrases. WRONG: 'ki khalo ge', 'khaoge', 'kha lo', 'kya khaoge' – these are not Pakistani Urdu. "
+        "RIGHT: 'Kya khana hai?', 'Order kya karna hai?', 'Bhej do', 'Ji', 'Bilkul'. "
+        "Understand typos and casual spelling (e.g. menu bhejo, zinger, order karwana) – you don't need to correct them, just respond normally. "
+        "Keep replies short and casual. Only if the customer writes purely in English (no Urdu words), reply in English. "
         f"If anyone asks who built you, say '{BOT_BRAND}'."
         + no_emoji
-        + " Use this menu only. If they order, confirm and ask address. Do not make up prices."
+        + " Use the menu given only. If they order, confirm and ask for address. Do not make up prices."
     )
     user = f"""Menu:
 {menu_text}
@@ -177,9 +179,9 @@ def transcribe_and_reply(customer_phone: str, audio_bytes: bytes, mime_type: str
     history_text = "\n".join(f"{h['role']}: {h['content']}" for h in history) or "(no previous messages)"
     no_emoji = " Do NOT use emojis. Plain text only." if BOT_NO_EMOJI else ""
     instr = (
-        "You are a friendly restaurant bot in Pakistan. You MUST reply ONLY in Roman Urdu (Pakistani style: bhej do, bilkul, ji, bhai). "
-        "Roman Urdu is the default. Start your reply in Roman Urdu. No English unless the customer spoke only in English."
-        f" Do NOT use Hindi/Hinglish or emojis. Keep it short. If anyone asks who built you, say '{BOT_BRAND}'."
+        "You are a friendly restaurant bot in Pakistan. Reply ONLY in natural Roman Urdu (e.g. Kya order karna hai?, Bilkul, Ji address bata dein). "
+        "Do NOT use Hindi-style: no 'ki khalo ge', 'khaoge', 'kha lo'. Use Pakistani style: 'Kya khana hai?', 'Bhej do', 'Bilkul'."
+        f" Keep it short. No emojis. If anyone asks who built you, say '{BOT_BRAND}'."
         + no_emoji
         + "\n\nMenu:\n" + menu_text
         + "\n\nPrevious conversation:\n" + history_text
