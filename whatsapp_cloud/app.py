@@ -1,5 +1,5 @@
 """
-WhatsApp Cloud API – Flask webhook. Receives messages, replies using Gemini 2.5 Flash-Lite.
+WhatsApp Cloud API – Flask webhook. Receives messages, replies using Gemini 2.5 Flash.
 """
 import os
 import time
@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 
 # Config from env
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN")
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "my_verify_token_123")
 APP_SECRET = os.getenv("META_APP_SECRET", "")
@@ -172,7 +172,7 @@ def download_media(media_id: str) -> bytes | None:
 
 
 def transcribe_and_reply(customer_phone: str, audio_bytes: bytes, mime_type: str) -> tuple[str, int]:
-    """Transcribe voice with Gemini 2.5 Flash-Lite and get bot reply."""
+    """Transcribe voice with Gemini 2.5 Flash and get bot reply."""
     conv_id = db.get_or_create_conversation(DEFAULT_RESTAURANT_ID, customer_phone)
     menu_text = db.get_menu_text(DEFAULT_RESTAURANT_ID)
     history = db.get_conversation_history(conv_id)
@@ -225,7 +225,7 @@ def webhook_verify():
 
 @app.route("/webhook", methods=["POST"])
 def webhook_receive():
-    """Meta sends POST with incoming messages. Reply using Gemini 2.5 Flash-Lite."""
+    """Meta sends POST with incoming messages. Reply using Gemini 2.5 Flash."""
     raw = request.get_data()
     sig = request.headers.get("X-Hub-Signature-256", "")
     log.info("Webhook POST received")
@@ -278,7 +278,7 @@ def webhook_receive():
 if __name__ == "__main__":
     if not GEMINI_API_KEY:
         raise SystemExit("Set GEMINI_API_KEY in .env (Google AI Studio)")
-    log.info("AI: Gemini 2.5 Flash-Lite (%s)", GEMINI_MODEL)
+    log.info("AI: Gemini 2.5 Flash (%s)", GEMINI_MODEL)
     if not WHATSAPP_TOKEN:
         log.warning("WHATSAPP_ACCESS_TOKEN not set – webhook will verify but won't send replies")
     db.init_db()
