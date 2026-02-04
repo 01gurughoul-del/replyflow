@@ -21,9 +21,10 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-# Config from env
+# Config from env – APIFree (proxy) or direct Anthropic
+APIFREE_API_KEY = os.getenv("APIFREE_API_KEY")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5")  # or claude-3-5-haiku-latest
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20250929")  # APIFree uses this; Anthropic uses claude-haiku-4-5
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN")
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "my_verify_token_123")
 APP_SECRET = os.getenv("META_APP_SECRET", "")
@@ -103,13 +104,20 @@ Your reply (conversational, natural, in character):"""
 
 
 def _call_claude(system: str, user_content: str) -> str:
-    """Call Anthropic Messages API (Claude Haiku)."""
-    url = "https://api.anthropic.com/v1/messages"
-    headers = {
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-    }
+    """Call Claude Haiku via APIFree (preferred) or direct Anthropic API."""
+    if APIFREE_API_KEY:
+        url = "https://api.apifree.com/v1/anthropic/claude-haiku-4-5/messages"
+        headers = {
+            "x-apifree-key": APIFREE_API_KEY,
+            "Content-Type": "application/json",
+        }
+    else:
+        url = "https://api.anthropic.com/v1/messages"
+        headers = {
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        }
     body = {
         "model": CLAUDE_MODEL,
         "max_tokens": 512,
@@ -311,9 +319,9 @@ def webhook_receive():
 
 
 if __name__ == "__main__":
-    if not ANTHROPIC_API_KEY:
-        raise SystemExit("Set ANTHROPIC_API_KEY in .env (console.anthropic.com)")
-    log.info("AI: Claude Haiku (%s)", CLAUDE_MODEL)
+    if not APIFREE_API_KEY and not ANTHROPIC_API_KEY:
+        raise SystemExit("Set APIFREE_API_KEY (apifree.com) or ANTHROPIC_API_KEY in .env")
+    log.info("AI: Claude Haiku via %s (%s)", "APIFree" if APIFREE_API_KEY else "Anthropic", CLAUDE_MODEL)
     if not WHATSAPP_TOKEN:
         log.warning("WHATSAPP_ACCESS_TOKEN not set – webhook will verify but won't send replies")
     db.init_db()
