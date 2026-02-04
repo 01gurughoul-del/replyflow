@@ -1,5 +1,4 @@
-# WhatsApp Cloud API – Flask webhook + Gemini 2.5 Flash
+# WhatsApp Cloud API – Flask webhook + Claude Haiku
 flask>=3.0.0
 python-dotenv>=1.0.0
-google-genai>=1.0.0
 requests>=2.31.0

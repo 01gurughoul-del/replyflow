@@ -1,5 +1,5 @@
 """
-WhatsApp Cloud API – Flask webhook. Receives messages, replies using Gemini 2.5 Flash.
+WhatsApp Cloud API – Flask webhook. Receives messages, replies using Claude Haiku.
 """
 import os
 import time
@@ -13,8 +13,6 @@ from flask import Flask, request
 # Load .env from phase folder
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-from google import genai
-from google.genai import types
 import requests
 
 import db
@@ -24,8 +22,8 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 # Config from env
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20250929")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN")
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "my_verify_token_123")
 APP_SECRET = os.getenv("META_APP_SECRET", "")
@@ -33,39 +31,66 @@ DEFAULT_RESTAURANT_ID = 1
 GRAPH_API_VERSION = "v21.0"
 BOT_NO_EMOJI = os.getenv("BOT_NO_EMOJI", "1").lower() in ("1", "true", "yes")
 BOT_BRAND = os.getenv("BOT_BRAND", "ReplyFlow by MadeReal")
-BOT_HOURS = os.getenv("BOT_HOURS", "")  # e.g. "12pm-11pm" – if set, say we're closed outside these hours
+BOT_HOURS = os.getenv("BOT_HOURS", "")
+RESTAURANT_NAME = os.getenv("RESTAURANT_NAME", "Moon Kitchen")
 
 
 def _get_system_and_user_prompt(menu_text: str, history_text: str, new_message: str) -> tuple[str, str]:
-    no_emoji = " No emojis." if BOT_NO_EMOJI else ""
+    emoji_rule = " Do NOT use emojis. Plain text only." if BOT_NO_EMOJI else " You may use emojis occasionally (😊👍🍛) but don't spam."
     hours_note = (
         f" We're open {BOT_HOURS}. If they ask and it's outside these hours, say we're closed and when we open."
         if BOT_HOURS else ""
     )
-    system = (
-        "You are the person at a Pakistani restaurant replying on WhatsApp. Talk like a real guy – short, casual, Roman Urdu. "
-        "1–2 sentences max. No AI phrases: no 'I would be happy to help!', no formal lists, no repeating their question back. "
-        "When something isn't on the menu (ketchup, extra sauce, etc.) – don't just say no. Suggest something we do have. "
-        "Example: Customer says 'ketchup hai?' → You say 'Nhe ketchup tou nhe hai, biryani k sath raita chalega?' or chutney. "
-        "When they ask 'kya achha hai?' or 'suggest karo' – pick 2–3 popular items from the menu and say them casually (e.g. Zinger, Shawarma, Fries). "
-        "When they order – confirm short (2 Zinger bilkul) then ask for address. Use the menu only; don't make up prices or items. "
-        "Understand typos. No Hindi-style (ki khalo ge, khaoge). Only if they write purely in English, reply in English. "
-        f"If they ask who made you, say '{BOT_BRAND}'."
-        + hours_note
-        + no_emoji
-        + "\n\nExamples of your style (reply exactly in this tone):\n"
-        "Customer: hi\nYou: Walekum assalam, kya order karna hai?\n"
-        "Customer: ketchup hae\nYou: Nhe ketchup tou nhe hai, biryani k sath raita chalega?\n"
-        "Customer: menu bhejo\nYou: Ye raha menu, kya order karna hai?\n"
-        "Customer: zinger kitne ka\nYou: Zinger 350 ka hai.\n"
-        "Customer: 2 zinger 1 pepsi\nYou: 2 Zinger 1 Pepsi bilkul. Address bata do.\n"
-        "Customer: [sends address]\nYou: Theek hai bhej rahe hain 25-30 min mein.\n"
-        "Customer: jaldi bhejna\nYou: Haan bhai jaldi bhej rahe hain.\n"
-        "Customer: kya achha hai?\nYou: Zinger aur Shawarma sab se zyada lete hain, try karo.\n"
-        "Customer: extra chutney mil sakti?\nYou: Haan bilkul, extra chutney laga dete hain.\n"
-        "Customer: ye item hai?\nYou: Nhe ye menu mein nhe hai, [suggest something similar from menu] le lo?"
-    )
-    user = f"""Menu:
+    system = f"""You are a friendly restaurant assistant for {RESTAURANT_NAME} in Karachi, Pakistan.
+
+PERSONALITY:
+- Talk like a real Pakistani person from Karachi, not a corporate bot
+- Be warm, casual, and relatable - like talking to a friend
+- Use Roman Urdu naturally mixed with English (code-switching)
+- Use local expressions: "yaar", "bhai", "aho", "bilkul", "dekho", "tension na lo", "scene hai"
+- Be helpful but never pushy or salesy
+{emoji_rule}{hours_note}
+- If they ask who made/built the bot, say "{BOT_BRAND}".
+
+YOUR ROLE:
+You take orders AND chat with customers. Both matter equally. You're a friendly neighborhood restaurant helper.
+
+MENU:
+The current menu (items and prices) is provided in the user message below. Use ONLY that menu. Do not make up items or prices.
+
+CONVERSATION PHILOSOPHY:
+1. ALWAYS respond to what the customer ACTUALLY said first
+   - They say "kya haal hai" → respond about how you are, THEN talk about food
+   - They say "bore ho raha" → sympathize first, THEN suggest food
+   - They ask random stuff → answer it naturally, THEN gently redirect
+   - NEVER ignore their message and robotically say "kya order karna hai"
+
+2. Natural conversation flow matters more than rushing to orders
+   - Let them chat 2-4 messages if they want. Build rapport before selling. Happy customer > quick order.
+
+3. Guide to orders naturally, not forcefully
+   - Use soft transitions: "Waise...", "By the way...", "Agar bhook lagi ho..."
+   - Read their vibe - if they're just chatting, don't force orders
+   - After 3-4 casual messages: "Waise agar order karna ho to batana, main yahan hi hoon!"
+
+4. Handle ANY topic they bring up (weather, politics, random questions) with brief, human responses and light humor, then naturally redirect. Never say "I can only help with orders".
+
+EXAMPLES OF YOUR STYLE:
+- "bhai kya scene hai" → "Scene theek chal raha hai yaar, maze mein. Tum batao kya haal? Bhook to nahi lagi?"
+- "yar bore ho raha hoon" → "Aho yaar, samajh sakta hoon. Kuch khao na phir, mood fresh bhi ho jaega."
+- "tumhara naam kya hai" → "Main {RESTAURANT_NAME} ka assistant hoon bhai. Orders bhi le sakta hoon. Kya scene hai?"
+- "menu dikhao" → Share the menu from below, then "Sab kuch fresh banta hai. Kya try karoge?"
+- "2 chicken biryani" → "Shabash! Spicy ya mild pasand karoge?"
+- When they give address → "Perfect! Order confirm. 30-40 min mein pohonch jaega. Payment COD?"
+- "jaldi bhejna" → "Bilkul bhai! Jitni jaldi ho sake bhej dete hain. Chill karo."
+
+CRITICAL RULES:
+- NEVER be robotic or formal. NEVER repeat "kya order karna hai" like a broken record.
+- NEVER ignore what customer said to jump to orders. NEVER be pushy.
+- Always mix Urdu naturally. Never say "I don't know" - give human responses.
+- RESPOND to their actual message first. BUILD rapport. USE humor. GUIDE gently, never push."""
+
+    user = f"""Current menu (use only these items and prices):
 {menu_text}
 
 Chat so far:
@@ -73,8 +98,46 @@ Chat so far:
 
 Customer: {new_message}
 
-Your reply (one short text, same style as examples):"""
+Your reply (conversational, natural, in character):"""
     return system, user
+
+
+def _call_claude(system: str, user_content: str) -> str:
+    """Call Anthropic Messages API (Claude Haiku)."""
+    url = "https://api.anthropic.com/v1/messages"
+    headers = {
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    body = {
+        "model": CLAUDE_MODEL,
+        "max_tokens": 512,
+        "system": system,
+        "messages": [{"role": "user", "content": user_content}],
+    }
+    for attempt in range(2):
+        try:
+            r = requests.post(url, json=body, headers=headers, timeout=60)
+            if r.status_code == 429 and attempt == 0:
+                log.warning("Claude rate limit, retrying in 20s...")
+                time.sleep(20)
+                continue
+            r.raise_for_status()
+            data = r.json()
+            for block in data.get("content", []):
+                if block.get("type") == "text":
+                    return (block.get("text") or "").strip()
+            return "Sorry, try again."
+        except requests.RequestException as e:
+            if attempt == 0:
+                resp = getattr(e, "response", None)
+                if resp is not None and resp.status_code == 429:
+                    time.sleep(20)
+                    continue
+            log.exception("Claude API error: %s", e)
+            return "Abhi response nahi aa raha, thori der baad try karo."
+    return "Abhi response nahi aa raha, thori der baad try karo."
 
 
 def get_ai_reply(customer_phone: str, new_message: str, restaurant_id: int = DEFAULT_RESTAURANT_ID) -> tuple[str, int]:
@@ -83,26 +146,8 @@ def get_ai_reply(customer_phone: str, new_message: str, restaurant_id: int = DEF
     history = db.get_conversation_history(conv_id)
     history_text = "\n".join(f"{h['role']}: {h['content']}" for h in history) or "(no previous messages)"
     system, user = _get_system_and_user_prompt(menu_text, history_text, new_message)
-    full_prompt = system + "\n\n" + user
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    reply = "Sorry, try again."
-    for attempt in range(2):
-        try:
-            response = client.models.generate_content(model=GEMINI_MODEL, contents=full_prompt)
-            reply = (response.text or "").strip()
-            return reply, conv_id
-        except Exception as e:
-            err_str = str(e)
-            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                if attempt == 0:
-                    log.warning("Gemini rate limit, retrying in 40s...")
-                    time.sleep(40)
-                else:
-                    reply = "Abhi request limit ho gayi hai, thori der baad try karo ya ReplyFlow by MadeReal se baat karo."
-                    return reply, conv_id
-            else:
-                raise
-    return reply, conv_id
+    reply = _call_claude(system, user)
+    return reply or "Sorry, try again.", conv_id
 
 
 def send_whatsapp_message(phone_number_id: str, to: str, text: str) -> bool:
@@ -189,44 +234,9 @@ def download_media(media_id: str) -> bytes | None:
 
 
 def transcribe_and_reply(customer_phone: str, audio_bytes: bytes, mime_type: str) -> tuple[str, int]:
-    """Transcribe voice with Gemini 2.5 Flash and get bot reply."""
+    """Voice: Claude doesn't accept audio here – ask user to type."""
     conv_id = db.get_or_create_conversation(DEFAULT_RESTAURANT_ID, customer_phone)
-    menu_text = db.get_menu_text(DEFAULT_RESTAURANT_ID)
-    history = db.get_conversation_history(conv_id)
-    history_text = "\n".join(f"{h['role']}: {h['content']}" for h in history) or "(no previous messages)"
-    no_emoji = " No emojis." if BOT_NO_EMOJI else ""
-    instr = (
-        "You're the restaurant guy on WhatsApp. Roman Urdu, 1–2 short sentences. When something isn't available (ketchup etc), suggest an alternative (raita, chutney). "
-        "Example: 'ketchup hai?' → 'Nhe ketchup tou nhe hai, biryani k sath raita chalega?' "
-        "When they ask what's good, suggest 2–3 popular items from the menu. No AI phrases, no formal lists. "
-        f"If they ask who made you, say '{BOT_BRAND}'."
-        + no_emoji
-        + "\n\nMenu:\n" + menu_text
-        + "\n\nChat so far:\n" + history_text
-        + "\n\nCustomer sent a VOICE. Transcribe it, then reply in the same short casual style. "
-        "Output: first line = what they said, blank line, then your reply."
-    )
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=[
-            types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
-            instr,
-        ],
-    )
-    out = (response.text or "").strip()
-    lines = out.split("\n")
-    transcribed = ""
-    reply = out
-    for i, line in enumerate(lines):
-        if line.strip() == "" and i > 0:
-            transcribed = "\n".join(lines[:i]).strip()
-            reply = "\n".join(lines[i + 1 :]).strip()
-            break
-    if not transcribed:
-        transcribed = lines[0] if lines else "(voice)"
-    if not reply:
-        reply = "Sun nahi paya, phir se likh ke bhejo ya bolo."
+    reply = "Abhi voice support nahi hai, apna message likh ke bhejo bilkul jaldi reply karunga."
     return reply, conv_id
 
 
@@ -243,7 +253,7 @@ def webhook_verify():
 
 @app.route("/webhook", methods=["POST"])
 def webhook_receive():
-    """Meta sends POST with incoming messages. Reply using Gemini 2.5 Flash."""
+    """Meta sends POST with incoming messages. Reply using Claude Haiku."""
     raw = request.get_data()
     sig = request.headers.get("X-Hub-Signature-256", "")
     log.info("Webhook POST received")
@@ -294,9 +304,9 @@ def webhook_receive():
 
 
 if __name__ == "__main__":
-    if not GEMINI_API_KEY:
-        raise SystemExit("Set GEMINI_API_KEY in .env (Google AI Studio)")
-    log.info("AI: Gemini 2.5 Flash (%s)", GEMINI_MODEL)
+    if not ANTHROPIC_API_KEY:
+        raise SystemExit("Set ANTHROPIC_API_KEY in .env (console.anthropic.com)")
+    log.info("AI: Claude Haiku (%s)", CLAUDE_MODEL)
     if not WHATSAPP_TOKEN:
         log.warning("WHATSAPP_ACCESS_TOKEN not set – webhook will verify but won't send replies")
     db.init_db()
