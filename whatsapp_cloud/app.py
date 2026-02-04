@@ -202,37 +202,49 @@ def webhook_receive():
     """Meta sends POST with incoming messages. Reply using Gemini."""
     raw = request.get_data()
     sig = request.headers.get("X-Hub-Signature-256", "")
+    log.info("Webhook POST received")
     if not verify_signature(raw, sig):
         log.warning("Invalid webhook signature")
         return "Bad signature", 403
 
     try:
         data = request.get_json() or {}
-    except Exception:
+    except Exception as e:
+        log.warning("Webhook JSON parse failed: %s", e)
         data = {}
 
-    for msg in parse_webhook(data):
+    messages = parse_webhook(data)
+    log.info("Parsed %d message(s) from webhook", len(messages))
+    if not messages:
+        log.info("Webhook payload keys: %s", list(data.keys()) if data else "empty")
+
+    for msg in messages:
         customer_phone = msg["from"]
         phone_number_id = msg["phone_number_id"]
-        if "text" in msg:
-            text = msg["text"]
-            log.info("Message from %s: %s", customer_phone, text[:50])
-            reply, conv_id = get_ai_reply(customer_phone, text)
-            db.save_message(conv_id, "user", text)
-            db.save_message(conv_id, "bot", reply)
-            send_whatsapp_message(phone_number_id, customer_phone, reply)
-        elif "audio_id" in msg:
-            audio_bytes = download_media(msg["audio_id"])
-            if audio_bytes:
-                log.info("Voice from %s", customer_phone)
-                reply, conv_id = transcribe_and_reply(
-                    customer_phone, audio_bytes, msg.get("mime_type", "audio/ogg")
-                )
-                db.save_message(conv_id, "user", "[voice message]")
+        try:
+            if "text" in msg:
+                text = msg["text"]
+                log.info("Message from %s: %s", customer_phone, text[:50])
+                reply, conv_id = get_ai_reply(customer_phone, text)
+                db.save_message(conv_id, "user", text)
                 db.save_message(conv_id, "bot", reply)
-                send_whatsapp_message(phone_number_id, customer_phone, reply)
-            else:
-                log.warning("Could not download voice from %s", customer_phone)
+                ok = send_whatsapp_message(phone_number_id, customer_phone, reply)
+                log.info("WhatsApp send: %s", "ok" if ok else "FAILED")
+            elif "audio_id" in msg:
+                audio_bytes = download_media(msg["audio_id"])
+                if audio_bytes:
+                    log.info("Voice from %s", customer_phone)
+                    reply, conv_id = transcribe_and_reply(
+                        customer_phone, audio_bytes, msg.get("mime_type", "audio/ogg")
+                    )
+                    db.save_message(conv_id, "user", "[voice message]")
+                    db.save_message(conv_id, "bot", reply)
+                    ok = send_whatsapp_message(phone_number_id, customer_phone, reply)
+                    log.info("WhatsApp send: %s", "ok" if ok else "FAILED")
+                else:
+                    log.warning("Could not download voice from %s", customer_phone)
+        except Exception as e:
+            log.exception("Error handling message from %s: %s", customer_phone, e)
 
     return "", 200
 
@@ -243,4 +255,5 @@ if __name__ == "__main__":
     if not WHATSAPP_TOKEN:
         log.warning("WHATSAPP_ACCESS_TOKEN not set – webhook will verify but won't send replies")
     db.init_db()
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=True)
+    debug = os.getenv("FLASK_DEBUG", "0").lower() in ("1", "true", "yes")
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=debug)
