@@ -1,0 +1,17 @@
+# Keep your API key and secrets out of git
+.env
+.env.local
+.env.*.local
+
+# Week 3 bot DB (local SQLite)
+week3/bot.db
+
+# WhatsApp Cloud API bot DB
+whatsapp_cloud/bot.db
+
+# Common
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
