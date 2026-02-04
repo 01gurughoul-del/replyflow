@@ -21,13 +21,13 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-# Config from env – APIFree (proxy) or direct Anthropic
+# Config from env – APIFree = free; Anthropic direct = paid (fallback when APIFree 404)
 APIFREE_API_KEY = os.getenv("APIFREE_API_KEY")
 APIFREE_MESSAGES_URL = os.getenv(
     "APIFREE_MESSAGES_URL",
-    "https://api.apifree.com/v1/anthropic/messages",  # override if 404 – check APIFree docs
+    "https://api.apifree.com/v1/anthropic/messages",
 )
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")  # optional, paid – only used if APIFree 404
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20250929")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN")
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "my_verify_token_123")
