@@ -107,56 +107,103 @@ Your reply (conversational, natural, in character):"""
     return system, user
 
 
+def _parse_claude_response(r: requests.Response) -> str | None:
+    """Parse Anthropic/APIFree-style response. Returns reply text or None."""
+    try:
+        data = r.json()
+    except Exception:
+        return None
+    for block in data.get("content", []):
+        if block.get("type") == "text":
+            return (block.get("text") or "").strip()
+    # Some proxies return OpenAI-style choices[0].message.content
+    choices = data.get("choices")
+    if choices and isinstance(choices, list):
+        msg = (choices[0] or {}).get("message") or (choices[0] or {}).get("content")
+        if isinstance(msg, str):
+            return msg.strip()
+        if isinstance(msg, dict) and "content" in msg:
+            return (msg["content"] or "").strip()
+    return None
+
+
 def _call_claude(system: str, user_content: str) -> str:
-    """Call Claude Haiku via APIFree (preferred) or direct Anthropic API."""
-    if APIFREE_API_KEY:
-        url = APIFREE_MESSAGES_URL
-        headers = {
-            "x-apifree-key": APIFREE_API_KEY,
-            "Content-Type": "application/json",
-        }
-    else:
-        url = "https://api.anthropic.com/v1/messages"
-        headers = {
-            "x-api-key": ANTHROPIC_API_KEY,
-            "anthropic-version": "2023-06-01",
-            "Content-Type": "application/json",
-        }
+    """Call Claude: try APIFree first, on 404 fallback to Anthropic if key set."""
     body = {
         "model": CLAUDE_MODEL,
         "max_tokens": 512,
         "system": system,
         "messages": [{"role": "user", "content": [{"type": "text", "text": user_content}]}],
     }
+    fallback_msg = "Abhi response nahi aa raha, thori der baad try karo."
+
+    # 1) Try APIFree if key set
+    if APIFREE_API_KEY:
+        for attempt in range(2):
+            try:
+                r = requests.post(
+                    APIFREE_MESSAGES_URL,
+                    json=body,
+                    headers={"x-apifree-key": APIFREE_API_KEY, "Content-Type": "application/json"},
+                    timeout=60,
+                )
+                if r.status_code == 200:
+                    out = _parse_claude_response(r)
+                    if out:
+                        return out
+                if r.status_code == 404:
+                    log.warning("APIFree 404 – URL wrong or service changed. Trying Anthropic fallback.")
+                    break
+                if r.status_code == 429 and attempt == 0:
+                    time.sleep(20)
+                    continue
+                if r.status_code == 400:
+                    try:
+                        log.error("APIFree 400: %s", r.json())
+                    except Exception:
+                        log.error("APIFree 400: %s", r.text[:300])
+                    return fallback_msg
+                r.raise_for_status()
+            except requests.RequestException as e:
+                if attempt == 0:
+                    resp = getattr(e, "response", None)
+                    if resp is not None and getattr(resp, "status_code", None) == 404:
+                        break
+                log.exception("APIFree error: %s", e)
+                if attempt == 1:
+                    break
+            break
+
+    # 2) Use Anthropic direct (primary or fallback after APIFree 404)
+    if not ANTHROPIC_API_KEY:
+        return fallback_msg
+    url = "https://api.anthropic.com/v1/messages"
+    headers = {
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+    }
+    # Anthropic direct expects model id like claude-haiku-4-5 (no date suffix)
+    anthropic_body = {**body, "model": os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5")}
     for attempt in range(2):
         try:
-            r = requests.post(url, json=body, headers=headers, timeout=60)
+            r = requests.post(url, json=anthropic_body, headers=headers, timeout=60)
             if r.status_code == 429 and attempt == 0:
-                log.warning("Claude rate limit, retrying in 20s...")
                 time.sleep(20)
                 continue
             if r.status_code == 400:
                 try:
-                    err_body = r.json()
-                    log.error("Claude 400 Bad Request: %s", err_body)
+                    log.error("Anthropic 400: %s", r.json())
                 except Exception:
-                    log.error("Claude 400 response: %s", r.text[:500])
-                return "Abhi response nahi aa raha, thori der baad try karo."
+                    log.error("Anthropic 400: %s", r.text[:300])
+                return fallback_msg
             r.raise_for_status()
-            data = r.json()
-            for block in data.get("content", []):
-                if block.get("type") == "text":
-                    return (block.get("text") or "").strip()
-            return "Sorry, try again."
+            out = _parse_claude_response(r)
+            if out:
+                return out
         except requests.RequestException as e:
-            if attempt == 0:
-                resp = getattr(e, "response", None)
-                if resp is not None and resp.status_code == 429:
-                    time.sleep(20)
-                    continue
-            log.exception("Claude API error: %s", e)
-            return "Abhi response nahi aa raha, thori der baad try karo."
-    return "Abhi response nahi aa raha, thori der baad try karo."
+            log.exception("Anthropic API error: %s", e)
+    return fallback_msg
 
 
 def get_ai_reply(customer_phone: str, new_message: str, restaurant_id: int = DEFAULT_RESTAURANT_ID) -> tuple[str, int]:
@@ -325,7 +372,10 @@ def webhook_receive():
 if __name__ == "__main__":
     if not APIFREE_API_KEY and not ANTHROPIC_API_KEY:
         raise SystemExit("Set APIFREE_API_KEY (apifree.com) or ANTHROPIC_API_KEY in .env")
-    log.info("AI: Claude Haiku via %s (%s)", "APIFree" if APIFREE_API_KEY else "Anthropic", CLAUDE_MODEL)
+    if APIFREE_API_KEY and ANTHROPIC_API_KEY:
+        log.info("AI: Claude Haiku – APIFree first, Anthropic fallback on 404")
+    else:
+        log.info("AI: Claude Haiku via %s", "APIFree" if APIFREE_API_KEY else "Anthropic")
     if not WHATSAPP_TOKEN:
         log.warning("WHATSAPP_ACCESS_TOKEN not set – webhook will verify but won't send replies")
     db.init_db()
