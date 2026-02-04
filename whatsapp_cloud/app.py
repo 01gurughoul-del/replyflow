@@ -23,8 +23,12 @@ log = logging.getLogger(__name__)
 
 # Config from env – APIFree (proxy) or direct Anthropic
 APIFREE_API_KEY = os.getenv("APIFREE_API_KEY")
+APIFREE_MESSAGES_URL = os.getenv(
+    "APIFREE_MESSAGES_URL",
+    "https://api.apifree.com/v1/anthropic/messages",  # override if 404 – check APIFree docs
+)
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20250929")  # APIFree uses this; Anthropic uses claude-haiku-4-5
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20250929")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN")
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "my_verify_token_123")
 APP_SECRET = os.getenv("META_APP_SECRET", "")
@@ -106,7 +110,7 @@ Your reply (conversational, natural, in character):"""
 def _call_claude(system: str, user_content: str) -> str:
     """Call Claude Haiku via APIFree (preferred) or direct Anthropic API."""
     if APIFREE_API_KEY:
-        url = "https://api.apifree.com/v1/anthropic/claude-haiku-4-5/messages"
+        url = APIFREE_MESSAGES_URL
         headers = {
             "x-apifree-key": APIFREE_API_KEY,
             "Content-Type": "application/json",
