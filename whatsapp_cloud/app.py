@@ -2,6 +2,7 @@
 WhatsApp Cloud API – Flask webhook. Receives messages, replies using Gemini.
 """
 import os
+import time
 import hmac
 import hashlib
 import logging
@@ -32,6 +33,7 @@ GRAPH_API_VERSION = "v21.0"
 # Style: set BOT_NO_EMOJI=1 to disable emojis, BOT_STYLE=formal/casual to adjust tone
 BOT_NO_EMOJI = os.getenv("BOT_NO_EMOJI", "1").lower() in ("1", "true", "yes")
 BOT_BRAND = os.getenv("BOT_BRAND", "ReplyFlow by MadeReal")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 
 def get_ai_reply(customer_phone: str, new_message: str, restaurant_id: int = DEFAULT_RESTAURANT_ID) -> tuple[str, int]:
@@ -60,8 +62,23 @@ Customer says: {new_message}
 Reply (short, friendly):"""
 
     client = genai.Client(api_key=GEMINI_API_KEY)
-    response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
-    reply = (response.text or "").strip()
+    reply = "Sorry, try again."
+    for attempt in range(2):
+        try:
+            response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+            reply = (response.text or "").strip()
+            return reply, conv_id
+        except Exception as e:
+            err_str = str(e)
+            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                if attempt == 0:
+                    log.warning("Gemini rate limit, retrying in 40s...")
+                    time.sleep(40)
+                else:
+                    reply = "Abhi request limit ho gayi hai, thori der baad try karo ya ReplyFlow by MadeReal se baat karo."
+                    return reply, conv_id
+            else:
+                raise
     return reply, conv_id
 
 
@@ -81,6 +98,8 @@ def send_whatsapp_message(phone_number_id: str, to: str, text: str) -> bool:
     }
     try:
         r = requests.post(url, json=body, headers=headers, timeout=10)
+        if r.status_code >= 400:
+            log.error("WhatsApp API %s: %s", r.status_code, r.text)
         r.raise_for_status()
         return True
     except Exception as e:
@@ -164,7 +183,7 @@ def transcribe_and_reply(customer_phone: str, audio_bytes: bytes, mime_type: str
     )
     client = genai.Client(api_key=GEMINI_API_KEY)
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model=GEMINI_MODEL,
         contents=[
             types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
             instr,
