@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 
 # Config from env
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20250929")
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5")  # or claude-3-5-haiku-latest
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN")
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "my_verify_token_123")
 APP_SECRET = os.getenv("META_APP_SECRET", "")
@@ -114,7 +114,7 @@ def _call_claude(system: str, user_content: str) -> str:
         "model": CLAUDE_MODEL,
         "max_tokens": 512,
         "system": system,
-        "messages": [{"role": "user", "content": user_content}],
+        "messages": [{"role": "user", "content": [{"type": "text", "text": user_content}]}],
     }
     for attempt in range(2):
         try:
@@ -123,6 +123,13 @@ def _call_claude(system: str, user_content: str) -> str:
                 log.warning("Claude rate limit, retrying in 20s...")
                 time.sleep(20)
                 continue
+            if r.status_code == 400:
+                try:
+                    err_body = r.json()
+                    log.error("Claude 400 Bad Request: %s", err_body)
+                except Exception:
+                    log.error("Claude 400 response: %s", r.text[:500])
+                return "Abhi response nahi aa raha, thori der baad try karo."
             r.raise_for_status()
             data = r.json()
             for block in data.get("content", []):
