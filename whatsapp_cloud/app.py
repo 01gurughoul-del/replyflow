@@ -1,5 +1,5 @@
 """
-WhatsApp Cloud API – Flask webhook. Receives messages, replies using Gemini.
+WhatsApp Cloud API – Flask webhook. Receives messages, replies using Groq only.
 """
 import os
 import time
@@ -13,8 +13,6 @@ from flask import Flask, request
 # Load .env from phase folder
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-from google import genai
-from google.genai import types
 import requests
 
 import db
@@ -24,19 +22,15 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 # Config from env
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-AI_PROVIDER = (os.getenv("AI_PROVIDER", "gemini") or "gemini").lower().strip()  # gemini | deepseek
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN")
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "my_verify_token_123")
 APP_SECRET = os.getenv("META_APP_SECRET", "")
 DEFAULT_RESTAURANT_ID = 1
 GRAPH_API_VERSION = "v21.0"
-# Style: set BOT_NO_EMOJI=1 to disable emojis, BOT_STYLE=formal/casual to adjust tone
 BOT_NO_EMOJI = os.getenv("BOT_NO_EMOJI", "1").lower() in ("1", "true", "yes")
 BOT_BRAND = os.getenv("BOT_BRAND", "ReplyFlow by MadeReal")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 
 
 def _get_system_and_user_prompt(menu_text: str, history_text: str, new_message: str) -> tuple[str, str]:
@@ -62,15 +56,15 @@ Reply (short, friendly):"""
     return system, user
 
 
-def _get_ai_reply_deepseek(system: str, user: str) -> str:
-    """Call DeepSeek chat API (OpenAI-compatible). More quota than Gemini free tier."""
-    url = "https://api.deepseek.com/v1/chat/completions"
+def _get_ai_reply_groq(system: str, user: str) -> str:
+    """Call Groq chat API (free tier, OpenAI-compatible)."""
+    url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json",
     }
     body = {
-        "model": DEEPSEEK_MODEL,
+        "model": GROQ_MODEL,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -80,21 +74,20 @@ def _get_ai_reply_deepseek(system: str, user: str) -> str:
     for attempt in range(2):
         try:
             r = requests.post(url, json=body, headers=headers, timeout=60)
-            if r.status_code == 429:
-                if attempt == 0:
-                    log.warning("DeepSeek rate limit, retrying in 40s...")
-                    time.sleep(40)
-                else:
-                    return "Abhi request limit ho gayi hai, thori der baad try karo ya ReplyFlow by MadeReal se baat karo."
+            if r.status_code == 429 and attempt == 0:
+                log.warning("Groq rate limit, retrying in 15s...")
+                time.sleep(15)
+                continue
             r.raise_for_status()
             data = r.json()
             reply = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
             return (reply or "Sorry, try again.").strip()
         except requests.RequestException as e:
-            if attempt == 0 and (e.response is None or e.response.status_code == 429):
-                time.sleep(40)
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status == 429 and attempt == 0:
+                time.sleep(15)
                 continue
-            log.exception("DeepSeek API error: %s", e)
+            log.exception("Groq API error: %s", e)
             return "Abhi response nahi aa raha, thori der baad try karo."
     return "Abhi response nahi aa raha, thori der baad try karo."
 
@@ -105,31 +98,7 @@ def get_ai_reply(customer_phone: str, new_message: str, restaurant_id: int = DEF
     history = db.get_conversation_history(conv_id)
     history_text = "\n".join(f"{h['role']}: {h['content']}" for h in history) or "(no previous messages)"
     system, user = _get_system_and_user_prompt(menu_text, history_text, new_message)
-
-    if AI_PROVIDER == "deepseek" and DEEPSEEK_API_KEY:
-        reply = _get_ai_reply_deepseek(system, user)
-        return reply, conv_id
-
-    # Default: Gemini
-    full_prompt = system + "\n\n" + user
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    reply = "Sorry, try again."
-    for attempt in range(2):
-        try:
-            response = client.models.generate_content(model=GEMINI_MODEL, contents=full_prompt)
-            reply = (response.text or "").strip()
-            return reply, conv_id
-        except Exception as e:
-            err_str = str(e)
-            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                if attempt == 0:
-                    log.warning("Gemini rate limit, retrying in 40s...")
-                    time.sleep(40)
-                else:
-                    reply = "Abhi request limit ho gayi hai, thori der baad try karo ya ReplyFlow by MadeReal se baat karo."
-                    return reply, conv_id
-            else:
-                raise
+    reply = _get_ai_reply_groq(system, user)
     return reply, conv_id
 
 
@@ -217,43 +186,9 @@ def download_media(media_id: str) -> bytes | None:
 
 
 def transcribe_and_reply(customer_phone: str, audio_bytes: bytes, mime_type: str) -> tuple[str, int]:
-    """Transcribe voice with Gemini and get bot reply."""
+    """Voice not supported with Groq-only; ask user to type."""
     conv_id = db.get_or_create_conversation(DEFAULT_RESTAURANT_ID, customer_phone)
-    menu_text = db.get_menu_text(DEFAULT_RESTAURANT_ID)
-    history = db.get_conversation_history(conv_id)
-    history_text = "\n".join(f"{h['role']}: {h['content']}" for h in history) or "(no previous messages)"
-    no_emoji = " Do NOT use emojis. Plain text only." if BOT_NO_EMOJI else ""
-    instr = (
-        "You are a friendly restaurant bot in Pakistan. You MUST reply ONLY in Roman Urdu (Pakistani style: bhej do, bilkul, ji, bhai). "
-        "Roman Urdu is the default. Start your reply in Roman Urdu. No English unless the customer spoke only in English."
-        f" Do NOT use Hindi/Hinglish or emojis. Keep it short. If anyone asks who built you, say '{BOT_BRAND}'."
-        + no_emoji
-        + "\n\nMenu:\n" + menu_text
-        + "\n\nPrevious conversation:\n" + history_text
-        + "\n\nA customer sent a VOICE MESSAGE. Transcribe what they said (Urdu/Roman Urdu/English) and reply as the bot. "
-        "Output format: first line = transcribed text, blank line, then your reply."
-    )
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=[
-            types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
-            instr,
-        ],
-    )
-    out = (response.text or "").strip()
-    lines = out.split("\n")
-    transcribed = ""
-    reply = out
-    for i, line in enumerate(lines):
-        if line.strip() == "" and i > 0:
-            transcribed = "\n".join(lines[:i]).strip()
-            reply = "\n".join(lines[i + 1 :]).strip()
-            break
-    if not transcribed:
-        transcribed = lines[0] if lines else "(voice)"
-    if not reply:
-        reply = "Sun nahi paya, phir se likh ke bhejo ya bolo."
+    reply = "Abhi voice support nahi hai. Apna message likh ke bhejo, bilkul jaldi reply karunga."
     return reply, conv_id
 
 
@@ -270,7 +205,7 @@ def webhook_verify():
 
 @app.route("/webhook", methods=["POST"])
 def webhook_receive():
-    """Meta sends POST with incoming messages. Reply using Gemini."""
+    """Meta sends POST with incoming messages. Reply using Groq."""
     raw = request.get_data()
     sig = request.headers.get("X-Hub-Signature-256", "")
     log.info("Webhook POST received")
@@ -321,12 +256,9 @@ def webhook_receive():
 
 
 if __name__ == "__main__":
-    has_gemini = bool(GEMINI_API_KEY)
-    has_deepseek = AI_PROVIDER == "deepseek" and bool(DEEPSEEK_API_KEY)
-    if not has_gemini and not has_deepseek:
-        raise SystemExit("Set GEMINI_API_KEY or (AI_PROVIDER=deepseek and DEEPSEEK_API_KEY) in .env")
-    if has_deepseek and not has_gemini:
-        log.warning("Voice notes need Gemini. Set GEMINI_API_KEY for voice support.")
+    if not GROQ_API_KEY:
+        raise SystemExit("Set GROQ_API_KEY in .env (get one at console.groq.com)")
+    log.info("AI: Groq only (voice messages get a fixed reply)")
     if not WHATSAPP_TOKEN:
         log.warning("WHATSAPP_ACCESS_TOKEN not set – webhook will verify but won't send replies")
     db.init_db()
