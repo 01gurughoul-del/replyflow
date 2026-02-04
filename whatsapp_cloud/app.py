@@ -25,6 +25,8 @@ log = logging.getLogger(__name__)
 
 # Config from env
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+AI_PROVIDER = (os.getenv("AI_PROVIDER", "gemini") or "gemini").lower().strip()  # gemini | deepseek
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN")
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "my_verify_token_123")
 APP_SECRET = os.getenv("META_APP_SECRET", "")
@@ -34,24 +36,21 @@ GRAPH_API_VERSION = "v21.0"
 BOT_NO_EMOJI = os.getenv("BOT_NO_EMOJI", "1").lower() in ("1", "true", "yes")
 BOT_BRAND = os.getenv("BOT_BRAND", "ReplyFlow by MadeReal")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 
 
-def get_ai_reply(customer_phone: str, new_message: str, restaurant_id: int = DEFAULT_RESTAURANT_ID) -> tuple[str, int]:
-    conv_id = db.get_or_create_conversation(restaurant_id, customer_phone)
-    menu_text = db.get_menu_text(restaurant_id)
-    history = db.get_conversation_history(conv_id)
-    history_text = "\n".join(f"{h['role']}: {h['content']}" for h in history) or "(no previous messages)"
-
+def _get_system_and_user_prompt(menu_text: str, history_text: str, new_message: str) -> tuple[str, str]:
     no_emoji = " Do NOT use emojis. Plain text only." if BOT_NO_EMOJI else ""
     system = (
-        "You are a friendly restaurant bot in Pakistan. Reply ONLY in Roman Urdu (Urdu written in English letters, "
-        "how Pakistani people text: bhej do, bilkul, ji, bhai, thora teekha, jaldi, etc). "
-        "Do NOT use Hindi/Hinglish. Use Pakistani Urdu slang and expressions. Keep it short. "
-        f"If anyone asks who built you or who you work for, say '{BOT_BRAND}'."
+        "You are a friendly restaurant bot in Pakistan. You MUST reply in Roman Urdu (Urdu in English letters: bhej do, bilkul, ji, bhai, thora teekha, jaldi). "
+        "Roman Urdu is your FIRST and ONLY default language. Start every reply in Roman Urdu. "
+        "Only if the customer writes ONLY in English (no Urdu words), you may reply in English. Otherwise always Roman Urdu. "
+        "Do NOT use Hindi/Hinglish. Use Pakistani Urdu slang. Keep it short. "
+        f"If anyone asks who built you, say '{BOT_BRAND}'."
         + no_emoji
-        + " Use this menu to answer. If they order, confirm items and ask for address. Do not make up prices."
+        + " Use this menu only. If they order, confirm and ask address. Do not make up prices."
     )
-    prompt = f"""Menu:
+    user = f"""Menu:
 {menu_text}
 
 Previous conversation:
@@ -60,12 +59,64 @@ Previous conversation:
 Customer says: {new_message}
 
 Reply (short, friendly):"""
+    return system, user
 
+
+def _get_ai_reply_deepseek(system: str, user: str) -> str:
+    """Call DeepSeek chat API (OpenAI-compatible). More quota than Gemini free tier."""
+    url = "https://api.deepseek.com/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    body = {
+        "model": DEEPSEEK_MODEL,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "max_tokens": 512,
+    }
+    for attempt in range(2):
+        try:
+            r = requests.post(url, json=body, headers=headers, timeout=60)
+            if r.status_code == 429:
+                if attempt == 0:
+                    log.warning("DeepSeek rate limit, retrying in 40s...")
+                    time.sleep(40)
+                else:
+                    return "Abhi request limit ho gayi hai, thori der baad try karo ya ReplyFlow by MadeReal se baat karo."
+            r.raise_for_status()
+            data = r.json()
+            reply = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+            return (reply or "Sorry, try again.").strip()
+        except requests.RequestException as e:
+            if attempt == 0 and (e.response is None or e.response.status_code == 429):
+                time.sleep(40)
+                continue
+            log.exception("DeepSeek API error: %s", e)
+            return "Abhi response nahi aa raha, thori der baad try karo."
+    return "Abhi response nahi aa raha, thori der baad try karo."
+
+
+def get_ai_reply(customer_phone: str, new_message: str, restaurant_id: int = DEFAULT_RESTAURANT_ID) -> tuple[str, int]:
+    conv_id = db.get_or_create_conversation(restaurant_id, customer_phone)
+    menu_text = db.get_menu_text(restaurant_id)
+    history = db.get_conversation_history(conv_id)
+    history_text = "\n".join(f"{h['role']}: {h['content']}" for h in history) or "(no previous messages)"
+    system, user = _get_system_and_user_prompt(menu_text, history_text, new_message)
+
+    if AI_PROVIDER == "deepseek" and DEEPSEEK_API_KEY:
+        reply = _get_ai_reply_deepseek(system, user)
+        return reply, conv_id
+
+    # Default: Gemini
+    full_prompt = system + "\n\n" + user
     client = genai.Client(api_key=GEMINI_API_KEY)
     reply = "Sorry, try again."
     for attempt in range(2):
         try:
-            response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+            response = client.models.generate_content(model=GEMINI_MODEL, contents=full_prompt)
             reply = (response.text or "").strip()
             return reply, conv_id
         except Exception as e:
@@ -173,8 +224,9 @@ def transcribe_and_reply(customer_phone: str, audio_bytes: bytes, mime_type: str
     history_text = "\n".join(f"{h['role']}: {h['content']}" for h in history) or "(no previous messages)"
     no_emoji = " Do NOT use emojis. Plain text only." if BOT_NO_EMOJI else ""
     instr = (
-        "You are a friendly restaurant bot in Pakistan. Reply ONLY in Roman Urdu (Pakistani style: bhej do, bilkul, ji, bhai). "
-        f"Do NOT use Hindi/Hinglish or emojis. Keep it short. If anyone asks who built you, say '{BOT_BRAND}'."
+        "You are a friendly restaurant bot in Pakistan. You MUST reply ONLY in Roman Urdu (Pakistani style: bhej do, bilkul, ji, bhai). "
+        "Roman Urdu is the default. Start your reply in Roman Urdu. No English unless the customer spoke only in English."
+        f" Do NOT use Hindi/Hinglish or emojis. Keep it short. If anyone asks who built you, say '{BOT_BRAND}'."
         + no_emoji
         + "\n\nMenu:\n" + menu_text
         + "\n\nPrevious conversation:\n" + history_text
@@ -269,8 +321,12 @@ def webhook_receive():
 
 
 if __name__ == "__main__":
-    if not GEMINI_API_KEY:
-        raise SystemExit("Set GEMINI_API_KEY in .env")
+    has_gemini = bool(GEMINI_API_KEY)
+    has_deepseek = AI_PROVIDER == "deepseek" and bool(DEEPSEEK_API_KEY)
+    if not has_gemini and not has_deepseek:
+        raise SystemExit("Set GEMINI_API_KEY or (AI_PROVIDER=deepseek and DEEPSEEK_API_KEY) in .env")
+    if has_deepseek and not has_gemini:
+        log.warning("Voice notes need Gemini. Set GEMINI_API_KEY for voice support.")
     if not WHATSAPP_TOKEN:
         log.warning("WHATSAPP_ACCESS_TOKEN not set – webhook will verify but won't send replies")
     db.init_db()

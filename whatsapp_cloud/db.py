@@ -50,11 +50,22 @@ def init_db():
                 FOREIGN KEY (conversation_id) REFERENCES conversations(id)
             );
         """)
-        cur = conn.execute("SELECT 1 FROM restaurants LIMIT 1")
-        if cur.fetchone() is None:
-            conn.execute("INSERT INTO restaurants (name) VALUES (?)", ("Demo Restaurant",))
+        # Ensure restaurant 1 exists and always use Pakistani Fast Food menu (fixes old menu on redeploy)
+        conn.execute("INSERT OR IGNORE INTO restaurants (id, name) VALUES (1, 'Pakistani Fast Food')")
+        conn.execute("UPDATE restaurants SET name = 'Pakistani Fast Food' WHERE id = 1")
+        conn.execute("DELETE FROM menu_items WHERE restaurant_id = 1")
+        pakistani_menu = [
+            ("Zinger Burger", 350), ("Beef Burger", 320), ("Chicken Burger", 280),
+            ("Chicken Shawarma", 250), ("Beef Shawarma", 280), ("Chicken Roll", 200),
+            ("Beef Roll", 220), ("Paratha Roll", 180), ("French Fries", 120),
+            ("Cheese Fries", 150), ("Chicken Tikka", 400), ("Seekh Kebab (6 pcs)", 350),
+            ("Chicken Nuggets (6 pcs)", 180), ("Pepsi", 80), ("Coke", 80), ("Water", 50),
+            ("Lassi", 120), ("Chai", 60),
+        ]
+        for name, price in pakistani_menu:
             conn.execute(
-                "INSERT INTO menu_items (restaurant_id, name, price_rs) VALUES (1, 'Chicken Biryani', 350), (1, 'Mutton Biryani', 450), (1, 'Raita', 50)"
+                "INSERT INTO menu_items (restaurant_id, name, price_rs) VALUES (1, ?, ?)",
+                (name, price),
             )
 
 
